@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	s "strings"
+	"sync"
 )
 
 func check(e error) {
@@ -12,34 +13,38 @@ func check(e error) {
 	}
 }
 
+func worker(files <-chan os.DirEntry, filePath string) {
+	for file := range files {
+		parts := s.Split(file.Name(), ".")
+		last := parts[len(parts)-1]
+		if !file.IsDir() {
+			// It is not a directory, so move the file based on the "last"
+			//create a directory with "last" first
+			dirpath := filePath + "/" + last
+			err := os.MkdirAll(dirpath, 0755)
+			check(err)
+			//move the file
+			err = os.Rename(filePath+"/"+file.Name(), filePath+"/"+last+"/"+file.Name())
+			check(err)
+		}
+	}
+}
+
 func main() {
 	fmt.Println("DropSort starting...")
 	filePath := "/Users/sjulakanti/Desktop/test"
 	c, err := os.ReadDir(filePath)
 	check(err)
-	fmt.Println("Listing Test dir")
-	var files []string
-	for _, entry := range c {
-		parts := s.Split(entry.Name(), ".")
-		last := parts[len(parts)-1]
-		if !entry.IsDir() {
-			// It is not a directory, so move the file based on the "last"
-			var flag = false
-			for file := range files {
-				if last == files[file] {
-					flag = true
-				}
-			}
-			if !flag {
-				//create a directory with "last" first
-				files = append(files, last)
-				dirpath := filePath + "/" + last
-				err := os.Mkdir(dirpath, 0755)
-				check(err)
-			}
-			//move the file
-			err = os.Rename(filePath+"/"+entry.Name(), filePath+"/"+last+"/"+entry.Name())
-			check(err)
-		}
+	files := make(chan os.DirEntry)
+	var wg sync.WaitGroup
+	for w := 1; w <= 3; w++ {
+		wg.Go(func() {
+			worker(files, filePath)
+		})
 	}
+	for _, entry := range c {
+		files <- entry
+	}
+	close(files)
+	wg.Wait()
 }
