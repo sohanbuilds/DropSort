@@ -10,8 +10,13 @@ import (
 )
 
 type Container struct {
-	mu sync.Mutex
-	m  map[string][]os.DirEntry
+	m map[string][]os.DirEntry
+}
+
+type HashRequest struct {
+	hash     []byte
+	file     os.DirEntry
+	response chan<- int
 }
 
 func check(e error) {
@@ -31,17 +36,30 @@ func hash(filePath string) []byte {
 	return hash
 }
 
-func worker(files <-chan os.DirEntry, filePath string, c *Container) {
+func stateManager(requests <-chan HashRequest, c *Container) {
 	m := c.m
+	for request := range requests {
+		hash := request.hash
+		if m[string(hash)] != nil {
+			m[string(hash)] = append(m[string(hash)], request.file)
+			request.response <- 1 + len(m[string(hash)])
+		} else {
+			m[string(hash)] = append(m[string(hash)], request.file)
+			request.response <- 1
+		}
+	}
+}
+
+func worker(files <-chan os.DirEntry, filePath string, requests chan<- HashRequest) {
 	for file := range files {
 		parts := s.Split(file.Name(), ".")
 		last := parts[len(parts)-1]
 		if !file.IsDir() {
 			hash := hash(filePath + "/" + file.Name())
-			c.mu.Lock()
-			m[string(hash)] = append(m[string(hash)], file)
-			l := len(m[string(hash)])
-			c.mu.Unlock()
+			response := make(chan int)
+			request := HashRequest{hash, file, response}
+			requests <- request
+			l := <-response
 			if l > 1 {
 				//create a directory with "duplicate entities"
 				dirpath := filePath + "/" + string(hash)
@@ -70,10 +88,15 @@ func main() {
 	check(err)
 	files := make(chan os.DirEntry)
 	container := Container{m: make(map[string][]os.DirEntry)}
+	requests := make(chan HashRequest)
+	var stateWg sync.WaitGroup
+	stateWg.Go(func() {
+		stateManager(requests, &container)
+	})
 	var wg sync.WaitGroup
 	for w := 1; w <= 3; w++ {
 		wg.Go(func() {
-			worker(files, filePath, &container)
+			worker(files, filePath, requests)
 		})
 	}
 	for _, entry := range c {
@@ -81,4 +104,6 @@ func main() {
 	}
 	close(files)
 	wg.Wait()
+	close(requests)
+	stateWg.Wait()
 }
